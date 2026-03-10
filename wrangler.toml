@@ -7,7 +7,9 @@ binding = "DB"
 database_name = "caseflare-db"
 database_id = "b3c64a38-faab-49dd-9792-a0a31929a4f7"
 
-# R2 bucket — uncomment after enabling R2 in Cloudflare dashboard
-# [[r2_buckets]]
-# binding = "DOCS"
-# bucket_name = "caseflare-docs"
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "caseflare"
+
+[vars]
+ANTHROPIC_API_KEY = ""
