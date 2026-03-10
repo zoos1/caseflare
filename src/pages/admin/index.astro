@@ -96,6 +96,7 @@ const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'num
             <span class={`w-2 h-2 rounded-full ${dbReady ? 'bg-green-400' : 'bg-red-400'}`}></span>
             <span>{dbReady ? 'System Ready' : 'DB Unavailable'}</span>
           </div>
+          <a href="/api/auth/logout" class="text-xs text-slate-500 hover:text-slate-300 transition-colors ml-2">Sign Out</a>
         </div>
       </div>
     </header>
@@ -168,6 +169,7 @@ const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'num
                       <th class="px-6 py-3 text-center">Docs</th>
                       <th class="px-6 py-3 text-center">Events</th>
                       <th class="px-6 py-3">Created</th>
+                      <th class="px-6 py-3">Client Portal</th>
                       <th class="px-6 py-3">Actions</th>
                     </tr>
                   </thead>
@@ -191,6 +193,18 @@ const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'num
                         <td class="px-6 py-4 text-center text-slate-400">{c.event_count}</td>
                         <td class="px-6 py-4 text-slate-500 text-xs">{new Date(c.created_at).toLocaleDateString()}</td>
                         <td class="px-6 py-4">
+                          <div class="flex items-center gap-2" data-pin-cell={c.id}>
+                            {c.client_pin ? (
+                              <>
+                                <span class="font-mono text-xs text-green-400" data-pin-display={c.id}>{c.client_pin}</span>
+                                <button data-copy-creds={c.id} data-email={c.client_email || ''} data-pin={c.client_pin} class="text-xs text-brand-400 hover:text-brand-300" title="Copy portal credentials">Copy</button>
+                              </>
+                            ) : (
+                              <button data-gen-pin={c.id} class="text-xs text-brand-400 hover:text-brand-300 whitespace-nowrap">Generate PIN</button>
+                            )}
+                          </div>
+                        </td>
+                        <td class="px-6 py-4">
                           <div class="flex items-center gap-2">
                             <button data-upload={c.id} class="text-xs text-brand-400 hover:text-brand-300 whitespace-nowrap" title="Upload documents">Upload</button>
                             <a href={`/case/${c.id}`} class="text-xs text-brand-400 hover:text-brand-300 whitespace-nowrap">View</a>
@@ -200,7 +214,7 @@ const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'num
                         </td>
                       </tr>
                       <tr class="hidden" data-detail={c.id}>
-                        <td colspan="8" class="px-6 py-4 bg-slate-900/30">
+                        <td colspan="9" class="px-6 py-4 bg-slate-900/30">
                           <div class="space-y-4">
                             <div class="grid grid-cols-2 gap-4 text-xs">
                               {c.client_email && <div><span class="text-slate-500">Email:</span> <span class="text-slate-300">{c.client_email}</span></div>}
@@ -642,5 +656,67 @@ const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'num
         }
       });
     }
+
+    // ─── Generate PIN ─────────────────────────────────────────────────────
+    document.querySelectorAll<HTMLButtonElement>('button[data-gen-pin]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.genPin;
+        if (!id) return;
+        btn.textContent = 'Generating...';
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/cases/${id}/pin`, { method: 'POST' });
+          const data = await res.json();
+          if (data.pin) {
+            const cell = document.querySelector(`[data-pin-cell="${id}"]`);
+            if (cell) {
+              // Find the case row to get client_email
+              const row = document.querySelector(`tr[data-case-id="${id}"]`);
+              const emailEl = row?.querySelector('td:nth-child(2) div:first-child');
+              const clientEmail = btn.closest('tr')?.querySelector('[data-email]')?.getAttribute('data-email') || '';
+              cell.innerHTML = `
+                <span class="font-mono text-xs text-green-400" data-pin-display="${id}">${data.pin}</span>
+                <button data-copy-creds="${id}" data-email="" data-pin="${data.pin}" class="text-xs text-brand-400 hover:text-brand-300" title="Copy portal credentials">Copy</button>
+              `;
+              // Attach copy handler to new button
+              attachCopyHandler(cell.querySelector(`[data-copy-creds="${id}"]`) as HTMLButtonElement);
+            }
+          } else {
+            btn.textContent = 'Error';
+            setTimeout(() => { btn.textContent = 'Generate PIN'; btn.disabled = false; }, 2000);
+          }
+        } catch {
+          btn.textContent = 'Error';
+          setTimeout(() => { btn.textContent = 'Generate PIN'; btn.disabled = false; }, 2000);
+        }
+      });
+    });
+
+    // ─── Copy Credentials ─────────────────────────────────────────────────
+    function attachCopyHandler(btn: HTMLButtonElement | null) {
+      if (!btn) return;
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const pin = btn.dataset.pin || '';
+        const email = btn.dataset.email || '';
+        const portalUrl = 'https://app.superflare.ai/portal';
+        let text = `Portal: ${portalUrl}\nPIN: ${pin}`;
+        if (email) text = `Email: ${email}\n${text}`;
+        try {
+          await navigator.clipboard.writeText(text);
+          const orig = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = orig; }, 2000);
+        } catch {
+          // Fallback
+          btn.textContent = 'Failed';
+          setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+        }
+      });
+    }
+
+    // Attach to existing copy buttons
+    document.querySelectorAll<HTMLButtonElement>('button[data-copy-creds]').forEach(attachCopyHandler);
   </script>
 </Layout>

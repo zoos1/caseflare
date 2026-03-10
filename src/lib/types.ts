@@ -11,6 +11,7 @@ export interface Case {
   doc_count: number;
   event_count: number;
   processing_log: string | null;
+  client_pin: string | null;
   created_at: string;
   updated_at: string;
 }

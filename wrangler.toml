@@ -13,3 +13,6 @@ bucket_name = "caseflare"
 
 [vars]
 ANTHROPIC_API_KEY = ""
+ADMIN_EMAIL = ""
+ADMIN_PASSWORD = ""
+SESSION_SECRET = ""
