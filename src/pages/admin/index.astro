@@ -1,0 +1,417 @@
+---
+export const prerender = false;
+
+import Layout from '../../layouts/Layout.astro';
+import { getAllCases, generateId, getSetting } from '../../lib/db';
+import type { Case, Settings } from '../../lib/types';
+
+const env = (Astro.locals as any).runtime?.env;
+let cases: Case[] = [];
+let settings: Settings = { ai_model: 'claude-sonnet-4-6', extraction_prompt: '', synthesis_prompt: '' };
+let dbReady = false;
+let dbError = '';
+let formSuccess = '';
+
+// Handle POST (new case creation via form)
+if (Astro.request.method === 'POST' && env?.DB) {
+  try {
+    const formData = await Astro.request.formData();
+    const id = generateId();
+    const now = new Date().toISOString();
+    await env.DB.prepare(`
+      INSERT INTO cases (id, client_name, client_email, firm_name, matter_name, matter_description, gdrive_url, r2_prefix, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?)
+    `).bind(
+      id,
+      formData.get('client_name') as string,
+      (formData.get('client_email') as string) || null,
+      (formData.get('firm_name') as string) || null,
+      formData.get('matter_name') as string,
+      (formData.get('matter_description') as string) || null,
+      (formData.get('gdrive_url') as string) || null,
+      `${id}/`,
+      now, now
+    ).run();
+    return Astro.redirect('/admin?created=' + id);
+  } catch (e: any) {
+    dbError = 'Failed to create case: ' + e.message;
+  }
+}
+
+// Load data
+if (env?.DB) {
+  try {
+    const result = await getAllCases(env.DB);
+    cases = (result.results || []) as unknown as Case[];
+    const [model, extraction, synthesis] = await Promise.all([
+      getSetting(env.DB, 'ai_model'),
+      getSetting(env.DB, 'extraction_prompt'),
+      getSetting(env.DB, 'synthesis_prompt'),
+    ]);
+    settings = {
+      ai_model: model || 'claude-sonnet-4-6',
+      extraction_prompt: extraction || '',
+      synthesis_prompt: synthesis || '',
+    };
+    dbReady = true;
+  } catch (e: any) {
+    dbError = e.message;
+  }
+} else {
+  dbError = 'D1 database binding not available.';
+}
+
+const url = new URL(Astro.request.url);
+if (url.searchParams.has('created')) {
+  formSuccess = `Case ${url.searchParams.get('created')} created successfully.`;
+}
+
+// Stats
+const totalCases = cases.length;
+const processingCases = cases.filter(c => c.status === 'processing').length;
+const completeCases = cases.filter(c => c.status === 'complete').length;
+const totalEvents = cases.reduce((sum, c) => sum + (c.event_count || 0), 0);
+
+const statusColors: Record<string, string> = {
+  intake: 'bg-slate-700 text-slate-300',
+  processing: 'bg-yellow-900/60 text-yellow-300',
+  complete: 'bg-green-900/60 text-green-300',
+  error: 'bg-red-900/60 text-red-300',
+};
+
+const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+---
+<Layout title="CaseFlare Admin | Superflare">
+  <div class="min-h-screen bg-slate-950">
+    <!-- Header -->
+    <header class="border-b border-white/8 bg-slate-950/80 backdrop-blur-sm sticky top-0 z-50">
+      <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center text-white font-bold text-sm">CF</div>
+          <h1 class="text-xl font-semibold text-white">CaseFlare <span class="text-brand-400 font-normal text-sm">Admin</span></h1>
+        </div>
+        <div class="flex items-center gap-4 text-sm text-slate-400">
+          <span>{now}</span>
+          <div class="flex items-center gap-2">
+            <span class={`w-2 h-2 rounded-full ${dbReady ? 'bg-green-400' : 'bg-red-400'}`}></span>
+            <span>{dbReady ? 'System Ready' : 'DB Unavailable'}</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-6 py-8 space-y-8">
+      <!-- DB Error Banner -->
+      {!dbReady && (
+        <div class="bg-red-950/50 border border-red-800/50 rounded-2xl p-6">
+          <h2 class="text-red-300 font-semibold text-lg mb-2">Database Not Initialized</h2>
+          <p class="text-red-400/80 mb-4">{dbError}</p>
+          <div class="bg-slate-900 rounded-xl p-4 font-mono text-sm text-slate-300">
+            <p class="text-slate-500 mb-1"># Initialize the local D1 database:</p>
+            <p>bun run db:init</p>
+            <p class="text-slate-500 mt-3 mb-1"># For remote (production) database:</p>
+            <p>wrangler d1 create caseflare-db</p>
+            <p>bun run db:init:remote</p>
+          </div>
+        </div>
+      )}
+
+      <!-- Success Banner -->
+      {formSuccess && (
+        <div class="bg-green-950/50 border border-green-800/50 rounded-2xl p-4 text-green-300">
+          {formSuccess}
+        </div>
+      )}
+
+      <!-- Stats Row -->
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div class="bg-slate-900/50 border border-white/8 rounded-2xl p-6">
+          <p class="text-sm text-slate-400 mb-1">Total Cases</p>
+          <p class="text-3xl font-bold text-white">{totalCases}</p>
+        </div>
+        <div class="bg-slate-900/50 border border-white/8 rounded-2xl p-6">
+          <p class="text-sm text-slate-400 mb-1">Processing</p>
+          <p class="text-3xl font-bold text-yellow-400">{processingCases}</p>
+        </div>
+        <div class="bg-slate-900/50 border border-white/8 rounded-2xl p-6">
+          <p class="text-sm text-slate-400 mb-1">Complete</p>
+          <p class="text-3xl font-bold text-green-400">{completeCases}</p>
+        </div>
+        <div class="bg-slate-900/50 border border-white/8 rounded-2xl p-6">
+          <p class="text-sm text-slate-400 mb-1">Total Events</p>
+          <p class="text-3xl font-bold text-brand-400">{totalEvents}</p>
+        </div>
+      </div>
+
+      <!-- Main Content Grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <!-- Cases Table (2/3 width) -->
+        <div class="lg:col-span-2">
+          <div class="bg-slate-900/50 border border-white/8 rounded-2xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-white/8">
+              <h2 class="text-lg font-semibold text-white">Open Cases</h2>
+            </div>
+            {cases.length === 0 ? (
+              <div class="p-12 text-center text-slate-500">
+                <p class="text-lg mb-2">No cases yet</p>
+                <p class="text-sm">Create your first case using the form.</p>
+              </div>
+            ) : (
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="text-left text-slate-400 text-xs uppercase tracking-wider">
+                      <th class="px-6 py-3">Case ID</th>
+                      <th class="px-6 py-3">Client / Firm</th>
+                      <th class="px-6 py-3">Matter</th>
+                      <th class="px-6 py-3">Status</th>
+                      <th class="px-6 py-3 text-center">Docs</th>
+                      <th class="px-6 py-3 text-center">Events</th>
+                      <th class="px-6 py-3">Created</th>
+                      <th class="px-6 py-3">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-white/5">
+                    {cases.map((c) => (
+                      <tr class="hover:bg-white/3 group" data-case-id={c.id}>
+                        <td class="px-6 py-4">
+                          <a href={`/case/${c.id}`} class="font-mono text-brand-400 hover:text-brand-300 text-xs">{c.id}</a>
+                        </td>
+                        <td class="px-6 py-4">
+                          <div class="text-white">{c.client_name}</div>
+                          {c.firm_name && <div class="text-slate-500 text-xs">{c.firm_name}</div>}
+                        </td>
+                        <td class="px-6 py-4 text-slate-300 max-w-[200px] truncate">{c.matter_name}</td>
+                        <td class="px-6 py-4">
+                          <span class={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${statusColors[c.status] || statusColors.intake}`}>
+                            {c.status}
+                          </span>
+                        </td>
+                        <td class="px-6 py-4 text-center text-slate-400">{c.doc_count}</td>
+                        <td class="px-6 py-4 text-center text-slate-400">{c.event_count}</td>
+                        <td class="px-6 py-4 text-slate-500 text-xs">{new Date(c.created_at).toLocaleDateString()}</td>
+                        <td class="px-6 py-4">
+                          <div class="flex items-center gap-2">
+                            <a href={`/case/${c.id}`} class="text-xs text-brand-400 hover:text-brand-300 whitespace-nowrap">View</a>
+                            <button data-process={c.id} class="text-xs text-yellow-400 hover:text-yellow-300 whitespace-nowrap">Process</button>
+                            <button data-delete={c.id} class="text-xs text-red-400 hover:text-red-300 whitespace-nowrap">Delete</button>
+                          </div>
+                        </td>
+                      </tr>
+                      <tr class="hidden" data-detail={c.id}>
+                        <td colspan="8" class="px-6 py-4 bg-slate-900/30">
+                          <div class="grid grid-cols-2 gap-4 text-xs">
+                            {c.client_email && <div><span class="text-slate-500">Email:</span> <span class="text-slate-300">{c.client_email}</span></div>}
+                            {c.gdrive_url && <div><span class="text-slate-500">Drive:</span> <a href={c.gdrive_url} target="_blank" class="text-brand-400 hover:underline">{c.gdrive_url}</a></div>}
+                            <div><span class="text-slate-500">R2 Path:</span> <span class="font-mono text-slate-300">caseflare-docs/{c.id}/</span></div>
+                            {c.processing_log && (
+                              <div class="col-span-2">
+                                <span class="text-slate-500">Processing Log:</span>
+                                <pre class="mt-1 bg-slate-950 rounded-lg p-3 text-slate-400 whitespace-pre-wrap">{c.processing_log}</pre>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <!-- New Case Form (1/3 width) -->
+        <div>
+          <div class="bg-slate-900/50 border border-white/8 rounded-2xl p-6">
+            <h2 class="text-lg font-semibold text-white mb-6">New Case</h2>
+            <form method="POST" class="space-y-4">
+              <div>
+                <label for="client_name" class="block text-sm text-slate-400 mb-1">Client Name *</label>
+                <input type="text" name="client_name" id="client_name" required
+                  class="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent placeholder-slate-500"
+                  placeholder="John Doe" />
+              </div>
+              <div>
+                <label for="client_email" class="block text-sm text-slate-400 mb-1">Client Email</label>
+                <input type="email" name="client_email" id="client_email"
+                  class="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent placeholder-slate-500"
+                  placeholder="john@example.com" />
+              </div>
+              <div>
+                <label for="firm_name" class="block text-sm text-slate-400 mb-1">Firm Name</label>
+                <input type="text" name="firm_name" id="firm_name"
+                  class="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent placeholder-slate-500"
+                  placeholder="Smith & Associates" />
+              </div>
+              <div>
+                <label for="matter_name" class="block text-sm text-slate-400 mb-1">Matter Name *</label>
+                <input type="text" name="matter_name" id="matter_name" required
+                  class="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent placeholder-slate-500"
+                  placeholder="Estate of Williams - Probate" />
+              </div>
+              <div>
+                <label for="matter_description" class="block text-sm text-slate-400 mb-1">Matter Description</label>
+                <textarea name="matter_description" id="matter_description" rows="3"
+                  class="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent placeholder-slate-500 resize-none"
+                  placeholder="Brief description of the legal matter..."></textarea>
+              </div>
+              <div>
+                <label for="gdrive_url" class="block text-sm text-slate-400 mb-1">Google Drive URL</label>
+                <input type="url" name="gdrive_url" id="gdrive_url"
+                  class="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent placeholder-slate-500"
+                  placeholder="https://drive.google.com/drive/folders/..." />
+              </div>
+              <button type="submit"
+                class="w-full bg-brand-600 hover:bg-brand-500 text-white font-medium py-2.5 px-4 rounded-xl transition-colors text-sm">
+                Create Case
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <!-- System Settings -->
+      <div class="bg-slate-900/50 border border-white/8 rounded-2xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-white/8 flex items-center justify-between">
+          <h2 class="text-lg font-semibold text-white">System Settings</h2>
+          <span id="settings-status" class="text-xs text-slate-500"></span>
+        </div>
+        <div class="p-6 space-y-6">
+          <!-- AI Model -->
+          <div>
+            <label for="ai_model" class="block text-sm text-slate-400 mb-2">AI Model</label>
+            <select id="ai_model"
+              class="bg-slate-800 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent w-full max-w-md">
+              <option value="claude-opus-4-6" selected={settings.ai_model === 'claude-opus-4-6'}>claude-opus-4-6</option>
+              <option value="claude-sonnet-4-6" selected={settings.ai_model === 'claude-sonnet-4-6'}>claude-sonnet-4-6</option>
+              <option value="claude-haiku-4-5-20251001" selected={settings.ai_model === 'claude-haiku-4-5-20251001'}>claude-haiku-4-5-20251001</option>
+            </select>
+          </div>
+
+          <!-- Extraction Prompt -->
+          <div>
+            <label for="extraction_prompt" class="block text-sm text-slate-400 mb-2">Extraction Prompt</label>
+            <textarea id="extraction_prompt" rows="5"
+              class="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent font-mono resize-y">{settings.extraction_prompt}</textarea>
+          </div>
+
+          <!-- Synthesis Prompt -->
+          <div>
+            <label for="synthesis_prompt" class="block text-sm text-slate-400 mb-2">Synthesis Prompt</label>
+            <textarea id="synthesis_prompt" rows="5"
+              class="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent font-mono resize-y">{settings.synthesis_prompt}</textarea>
+          </div>
+
+          <!-- Save Button -->
+          <button id="save-settings"
+            class="bg-brand-600 hover:bg-brand-500 text-white font-medium py-2.5 px-6 rounded-xl transition-colors text-sm">
+            Save Settings
+          </button>
+
+          <!-- System File Paths -->
+          <div class="mt-8">
+            <h3 class="text-sm text-slate-400 mb-3">System File Paths</h3>
+            <div class="bg-slate-950 border border-white/5 rounded-xl p-5 font-mono text-xs space-y-2">
+              <div class="flex"><span class="text-slate-500 w-40 shrink-0">App directory:</span> <span class="text-slate-300">/Users/stu/caseflare</span></div>
+              <div class="flex"><span class="text-slate-500 w-40 shrink-0">Build output:</span> <span class="text-slate-300">/Users/stu/caseflare/dist</span></div>
+              <div class="flex"><span class="text-slate-500 w-40 shrink-0">Wrangler config:</span> <span class="text-slate-300">/Users/stu/caseflare/wrangler.toml</span></div>
+              <div class="flex"><span class="text-slate-500 w-40 shrink-0">R2 Bucket:</span> <span class="text-slate-300">caseflare-docs</span></div>
+              <div class="flex"><span class="text-slate-500 w-40 shrink-0">D1 Database:</span> <span class="text-slate-300">caseflare-db</span></div>
+              <div class="flex"><span class="text-slate-500 w-40 shrink-0">Case files pattern:</span> <span class="text-slate-300">caseflare-docs/&#123;case_id&#125;/</span></div>
+              <div class="mt-3 pt-3 border-t border-white/5 text-slate-500 leading-relaxed">
+                Case files are stored in R2 at path: caseflare-docs/&#123;case_id&#125;/ — access via
+                Cloudflare dashboard or <span class="text-slate-400">wrangler r2 object list caseflare-docs --prefix=&#123;case_id&#125;/</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Row expand/collapse
+    document.querySelectorAll<HTMLTableRowElement>('tr[data-case-id]').forEach(row => {
+      row.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.closest('a') || target.closest('button')) return;
+        const id = row.dataset.caseId;
+        const detail = document.querySelector<HTMLTableRowElement>(`tr[data-detail="${id}"]`);
+        if (detail) detail.classList.toggle('hidden');
+      });
+    });
+
+    // Process button
+    document.querySelectorAll<HTMLButtonElement>('button[data-process]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.process;
+        btn.textContent = 'Starting...';
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/process/${id}`, { method: 'POST' });
+          if (res.ok) {
+            window.location.reload();
+          } else {
+            btn.textContent = 'Error';
+          }
+        } catch {
+          btn.textContent = 'Error';
+        }
+      });
+    });
+
+    // Delete button
+    document.querySelectorAll<HTMLButtonElement>('button[data-delete]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.delete;
+        if (!confirm(`Delete case ${id}? This cannot be undone.`)) return;
+        btn.textContent = 'Deleting...';
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/cases/${id}`, { method: 'DELETE' });
+          if (res.ok) {
+            window.location.reload();
+          } else {
+            btn.textContent = 'Error';
+          }
+        } catch {
+          btn.textContent = 'Error';
+        }
+      });
+    });
+
+    // Settings save
+    const saveBtn = document.getElementById('save-settings');
+    const statusEl = document.getElementById('settings-status');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', async () => {
+        saveBtn.textContent = 'Saving...';
+        (saveBtn as HTMLButtonElement).disabled = true;
+        try {
+          const body = {
+            ai_model: (document.getElementById('ai_model') as HTMLSelectElement).value,
+            extraction_prompt: (document.getElementById('extraction_prompt') as HTMLTextAreaElement).value,
+            synthesis_prompt: (document.getElementById('synthesis_prompt') as HTMLTextAreaElement).value,
+          };
+          const res = await fetch('/api/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (res.ok) {
+            if (statusEl) statusEl.textContent = 'Settings saved';
+            setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
+          } else {
+            if (statusEl) statusEl.textContent = 'Failed to save';
+          }
+        } catch {
+          if (statusEl) statusEl.textContent = 'Error saving settings';
+        } finally {
+          saveBtn.textContent = 'Save Settings';
+          (saveBtn as HTMLButtonElement).disabled = false;
+        }
+      });
+    }
+  </script>
+</Layout>

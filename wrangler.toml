@@ -1,0 +1,12 @@
+name = "caseflare"
+compatibility_date = "2024-01-01"
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "caseflare-db"
+database_id = "b3c64a38-faab-49dd-9792-a0a31929a4f7"
+
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "caseflare-docs"
