@@ -11,8 +11,5 @@ database_id = "b3c64a38-faab-49dd-9792-a0a31929a4f7"
 binding = "DOCS"
 bucket_name = "caseflare"
 
-[vars]
-ANTHROPIC_API_KEY = ""
-ADMIN_EMAIL = ""
-ADMIN_PASSWORD = ""
-SESSION_SECRET = ""
+# Secrets (set via: wrangler pages secret put <NAME> --project-name=caseflare)
+# ANTHROPIC_API_KEY, ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET
