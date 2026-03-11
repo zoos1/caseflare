@@ -1,0 +1,273 @@
+---
+export const prerender = false;
+
+import Layout from '../../layouts/Layout.astro';
+import { getCaseById, getEventsByCase } from '../../lib/db';
+import type { Case, Event } from '../../lib/types';
+
+const { id } = Astro.params;
+const env = (Astro.locals as any).runtime?.env;
+
+if (!env?.DB) {
+  return new Response('Service unavailable', { status: 503 });
+}
+
+const caseData = await getCaseById(env.DB, id!) as Case | null;
+if (!caseData) {
+  return new Response('Not found', { status: 404 });
+}
+
+// Redirect legal_matter cases to the timeline view
+if ((caseData as any).case_type !== 'ma_due_diligence') {
+  return Astro.redirect(`/case/${id}`);
+}
+
+const eventsResult = await getEventsByCase(env.DB, id!);
+const events = (eventsResult.results || []) as unknown as Event[];
+
+function parseList(str: string | null): string[] {
+  if (!str) return [];
+  try {
+    const parsed = JSON.parse(str);
+    return Array.isArray(parsed) ? parsed : [str];
+  } catch {
+    return str.split(',').map(s => s.trim()).filter(Boolean);
+  }
+}
+
+// Categorize events
+const getCategory = (event: Event): string => {
+  const tags = parseList(event.tags);
+  return tags[0] || 'UNCATEGORIZED';
+};
+
+const summaryItems = events.filter(e => getCategory(e) === 'SUMMARY');
+const redFlagItems = events.filter(e => getCategory(e) === 'RED_FLAGS');
+const otherItems = events.filter(e => !['SUMMARY', 'RED_FLAGS'].includes(getCategory(e)));
+
+// Group by category
+const categoryGroups: Record<string, Event[]> = {};
+for (const item of otherItems) {
+  const cat = getCategory(item);
+  if (!categoryGroups[cat]) categoryGroups[cat] = [];
+  categoryGroups[cat].push(item);
+}
+
+// Category display config
+const categoryConfig: Record<string, { label: string; accent: string; bg: string; border: string }> = {
+  CONTRACTS: { label: 'Contracts & Agreements', accent: 'text-blue-400', bg: 'bg-blue-950/30', border: 'border-blue-800/40' },
+  FINANCIALS: { label: 'Financial Information', accent: 'text-emerald-400', bg: 'bg-emerald-950/30', border: 'border-emerald-800/40' },
+  EMPLOYEES: { label: 'Employees & Personnel', accent: 'text-purple-400', bg: 'bg-purple-950/30', border: 'border-purple-800/40' },
+  REAL_PROPERTY: { label: 'Real Property & Leases', accent: 'text-orange-400', bg: 'bg-orange-950/30', border: 'border-orange-800/40' },
+  REGULATORY: { label: 'Regulatory & Compliance', accent: 'text-yellow-400', bg: 'bg-yellow-950/30', border: 'border-yellow-800/40' },
+  LIABILITIES: { label: 'Liabilities & Obligations', accent: 'text-red-400', bg: 'bg-red-950/30', border: 'border-red-800/40' },
+};
+
+const defaultCategoryConfig = { label: '', accent: 'text-slate-400', bg: 'bg-slate-900/30', border: 'border-slate-700/40' };
+
+// Sort categories in preferred order
+const categoryOrder = ['CONTRACTS', 'FINANCIALS', 'EMPLOYEES', 'REAL_PROPERTY', 'REGULATORY', 'LIABILITIES'];
+const sortedCategories = Object.keys(categoryGroups).sort((a, b) => {
+  const ai = categoryOrder.indexOf(a);
+  const bi = categoryOrder.indexOf(b);
+  return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+});
+
+const riskColors: Record<string, string> = {
+  high: 'bg-red-600 text-white',
+  medium: 'bg-yellow-500 text-yellow-950',
+  low: 'bg-green-600 text-white',
+};
+
+function getRiskFromDescription(event: Event): string {
+  // Try to detect risk_level from the event description or parse from data
+  const desc = (event.description || '').toLowerCase();
+  if (desc.includes('risk_level') || desc.includes('high risk')) return 'high';
+  if (desc.includes('medium risk')) return 'medium';
+  return 'low';
+}
+
+const reportDate = new Date(caseData.created_at).toLocaleDateString('en-US', {
+  year: 'numeric', month: 'long', day: 'numeric'
+});
+---
+<Layout title={`Due Diligence Report: ${caseData.matter_name}`} description={`M&A Due Diligence Report for ${caseData.matter_name}`}>
+  <style>
+    @media print {
+      .no-print { display: none !important; }
+      body { background: white !important; color: #0f172a !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .print-break { page-break-before: always; }
+      .report-header { background: #0f172a !important; color: white !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+    details[open] summary .chevron { transform: rotate(90deg); }
+    .chevron { transition: transform 0.2s ease; }
+  </style>
+
+  <div class="min-h-screen bg-white">
+    <!-- Header (dark, branded) -->
+    <header class="report-header bg-slate-900 text-white">
+      <div class="max-w-5xl mx-auto px-8 py-8">
+        <div class="flex items-center justify-between mb-6">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-brand-600 flex items-center justify-center text-white font-bold text-base">CF</div>
+            <div>
+              <div class="text-lg font-semibold tracking-tight">Superflare</div>
+              <div class="text-xs text-slate-400 tracking-wider uppercase">Deal Intelligence Report</div>
+            </div>
+          </div>
+          <button onclick="window.print()" class="no-print bg-white/10 hover:bg-white/20 text-white text-sm font-medium px-5 py-2.5 rounded-xl transition-colors flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
+            Print / Export PDF
+          </button>
+        </div>
+
+        <h1 class="text-3xl font-bold mb-2">{caseData.matter_name}</h1>
+        <div class="flex items-center gap-3 text-sm text-slate-300 mb-4">
+          <span>{caseData.client_name}</span>
+          {caseData.firm_name && (
+            <>
+              <span class="text-slate-600">|</span>
+              <span>{caseData.firm_name}</span>
+            </>
+          )}
+        </div>
+
+        <div class="flex items-center gap-6 text-xs text-slate-400 mb-4">
+          <span>Prepared by: <strong class="text-slate-200">Superflare</strong></span>
+          <span>Date: <strong class="text-slate-200">{reportDate}</strong></span>
+        </div>
+
+        <div class="text-xs font-medium tracking-wider uppercase text-red-400/80 mb-5">
+          Confidential -- Attorney-Client Privileged Work Product
+        </div>
+
+        <div class="flex items-center gap-6 text-sm">
+          <div class="bg-white/10 rounded-xl px-4 py-2">
+            <span class="text-slate-400 text-xs">Documents</span>
+            <div class="text-xl font-bold">{caseData.doc_count}</div>
+          </div>
+          <div class="bg-white/10 rounded-xl px-4 py-2">
+            <span class="text-slate-400 text-xs">Items Extracted</span>
+            <div class="text-xl font-bold">{events.length}</div>
+          </div>
+          <div class="bg-white/10 rounded-xl px-4 py-2">
+            <span class="text-slate-400 text-xs">Red Flags</span>
+            <div class="text-xl font-bold text-red-400">{redFlagItems.length}</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Report Body -->
+    <main class="max-w-5xl mx-auto px-8 py-10 text-slate-900">
+      {events.length === 0 ? (
+        <div class="text-center py-20">
+          <div class="w-16 h-16 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center mx-auto mb-6">
+            <svg class="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+          </div>
+          <h2 class="text-xl text-slate-700 mb-2">Report is being prepared</h2>
+          <p class="text-slate-500">Documents are being analyzed. Check back soon.</p>
+        </div>
+      ) : (
+        <div class="space-y-10">
+          <!-- Executive Summary -->
+          {summaryItems.length > 0 && (
+            <section>
+              <h2 class="text-2xl font-bold text-slate-900 mb-4">Executive Summary</h2>
+              <div class="bg-brand-50 border border-brand-200 rounded-2xl p-6 space-y-4">
+                {summaryItems.map((item) => (
+                  <div>
+                    <h3 class="font-semibold text-brand-900 mb-1">{item.title}</h3>
+                    <p class="text-slate-700 text-sm leading-relaxed">{item.description}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <!-- Red Flags -->
+          {redFlagItems.length > 0 && (
+            <section>
+              <h2 class="text-2xl font-bold text-slate-900 mb-1 flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-red-500"></span>
+                Red Flags
+              </h2>
+              <p class="text-sm text-slate-500 mb-4">Items requiring attention before closing</p>
+              <div class="space-y-4">
+                {redFlagItems.map((item) => {
+                  const parties = parseList(item.parties);
+                  return (
+                    <div class="border border-red-200 bg-red-50/50 rounded-2xl p-5">
+                      <div class="flex items-start justify-between gap-4 mb-2">
+                        <h3 class="font-semibold text-slate-900">{item.title}</h3>
+                        <span class={`shrink-0 inline-block px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${riskColors.high}`}>
+                          HIGH
+                        </span>
+                      </div>
+                      <p class="text-slate-700 text-sm leading-relaxed mb-3">{item.description}</p>
+                      {item.source_quote && (
+                        <blockquote class="border-l-3 border-red-300 pl-4 py-1 text-sm text-slate-500 italic mb-3">
+                          "{item.source_quote}"
+                        </blockquote>
+                      )}
+                      <div class="flex items-center gap-3 text-xs text-slate-500">
+                        {item.source_doc && <span>Source: {item.source_doc}</span>}
+                        {parties.length > 0 && <span>Parties: {parties.join(', ')}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          <!-- Main Report Sections -->
+          {sortedCategories.map((cat) => {
+            const items = categoryGroups[cat];
+            const config = categoryConfig[cat] || { ...defaultCategoryConfig, label: cat.replace(/_/g, ' ') };
+            return (
+              <section class="print-break">
+                <details open>
+                  <summary class="cursor-pointer select-none flex items-center gap-2 mb-4 group">
+                    <svg class="chevron w-4 h-4 text-slate-400 group-hover:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    <h2 class="text-xl font-bold text-slate-900">{config.label}</h2>
+                    <span class="text-sm text-slate-400 font-normal">({items.length} items)</span>
+                  </summary>
+                  <div class="space-y-3 ml-6">
+                    {items.map((item) => {
+                      const parties = parseList(item.parties);
+                      return (
+                        <div class={`border ${config.border} ${config.bg} rounded-xl p-4`}>
+                          <h3 class="font-semibold text-slate-900 mb-1">{item.title}</h3>
+                          <p class="text-slate-700 text-sm leading-relaxed mb-2">{item.description}</p>
+                          {item.source_quote && (
+                            <blockquote class="border-l-2 border-slate-300 pl-3 py-1 text-sm text-slate-500 italic mb-2">
+                              "{item.source_quote}"
+                            </blockquote>
+                          )}
+                          <div class="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                            {item.source_doc && item.source_doc !== 'multiple' && <span>Source: {item.source_doc}</span>}
+                            {parties.length > 0 && <span>Parties: {parties.join(', ')}</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </details>
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-200 py-6 no-print">
+      <div class="max-w-5xl mx-auto px-8 text-center text-xs text-slate-400">
+        Generated by CaseFlare -- Superflare Deal Intelligence
+      </div>
+    </footer>
+  </div>
+</Layout>

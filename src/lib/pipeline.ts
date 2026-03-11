@@ -40,15 +40,20 @@ export async function processCase(caseId: string, env: Env): Promise<void> {
     if (!caseRow) throw new Error(`Case ${caseId} not found`);
     addLog(`Case found: ${caseRow.matter_name}`);
 
-    // 2. Load settings
+    // 2. Load settings (use DD-specific prompts for M&A due diligence cases)
+    const isDD = (caseRow as any).case_type === 'ma_due_diligence';
+    const extractionPromptKey = isDD ? 'dd_extraction_prompt' : 'extraction_prompt';
+    const synthesisPromptKey = isDD ? 'dd_synthesis_prompt' : 'synthesis_prompt';
+
     const [aiModel, extractionPrompt, synthesisPrompt] = await Promise.all([
       getSetting(env.DB, 'ai_model'),
-      getSetting(env.DB, 'extraction_prompt'),
-      getSetting(env.DB, 'synthesis_prompt'),
+      getSetting(env.DB, extractionPromptKey),
+      getSetting(env.DB, synthesisPromptKey),
     ]);
 
-    if (!extractionPrompt) throw new Error('Extraction prompt not configured in settings');
-    if (!synthesisPrompt) throw new Error('Synthesis prompt not configured in settings');
+    if (!extractionPrompt) throw new Error(`${extractionPromptKey} not configured in settings`);
+    if (!synthesisPrompt) throw new Error(`${synthesisPromptKey} not configured in settings`);
+    if (isDD) addLog('Mode: M&A Due Diligence');
     if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not set');
 
     const model = aiModel || 'claude-sonnet-4-6';
@@ -118,21 +123,26 @@ export async function processCase(caseId: string, env: Env): Promise<void> {
 
         // Insert events for this document
         for (let i = 0; i < events.length; i++) {
-          const evt = events[i];
+          const evt = events[i] as any;
           const id = generateId();
+          // For DD cases, map category/detail/risk_level fields to events table columns
+          const title = evt.title || evt.category || 'Untitled';
+          const description = evt.description || evt.detail || '';
+          const tags = isDD && evt.category ? JSON.stringify([evt.category]) : null;
           await env.DB.prepare(`
-            INSERT INTO events (id, case_id, event_date, event_date_raw, title, description, source_doc, source_quote, parties, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO events (id, case_id, event_date, event_date_raw, title, description, source_doc, source_quote, parties, tags, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             id,
             caseId,
             evt.event_date || null,
             evt.event_date_raw || null,
-            evt.title,
-            evt.description,
+            title,
+            description,
             filename,
             evt.source_quote || null,
             evt.parties ? JSON.stringify(evt.parties) : null,
+            tags,
             allEvents.length - events.length + i,
           ).run();
         }
@@ -165,7 +175,8 @@ export async function processCase(caseId: string, env: Env): Promise<void> {
       const synthPrompt = buildSynthesisPrompt(
         synthesisPrompt,
         objects.length,
-        eventsForSynthesis.results || []
+        eventsForSynthesis.results || [],
+        isDD
       );
 
       const synthResponse = await callClaude(synthPrompt, env.ANTHROPIC_API_KEY, model);
@@ -177,8 +188,13 @@ export async function processCase(caseId: string, env: Env): Promise<void> {
       await env.DB.prepare('DELETE FROM events WHERE case_id = ?').bind(caseId).run();
 
       for (let i = 0; i < synthesizedEvents.length; i++) {
-        const evt = synthesizedEvents[i];
+        const evt = synthesizedEvents[i] as any;
         const id = generateId();
+        const title = evt.title || evt.category || 'Untitled';
+        const description = evt.description || evt.detail || '';
+        const tags = isDD && evt.category
+          ? JSON.stringify([evt.category])
+          : evt.tags ? JSON.stringify(evt.tags) : null;
         await env.DB.prepare(`
           INSERT INTO events (id, case_id, event_date, event_date_raw, title, description, source_doc, source_quote, parties, tags, sort_order)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -187,12 +203,12 @@ export async function processCase(caseId: string, env: Env): Promise<void> {
           caseId,
           evt.event_date || null,
           evt.event_date_raw || null,
-          evt.title,
-          evt.description,
-          (evt as any).source_doc || 'multiple',
+          title,
+          description,
+          evt.source_doc || 'multiple',
           evt.source_quote || null,
           evt.parties ? JSON.stringify(evt.parties) : null,
-          evt.tags ? JSON.stringify(evt.tags) : null,
+          tags,
           i,
         ).run();
       }
@@ -270,7 +286,16 @@ ${text}
 Return ONLY a valid JSON array. No explanation, no markdown, just the JSON array.`;
 }
 
-function buildSynthesisPrompt(synthesisPrompt: string, docCount: number, events: unknown[]): string {
+function buildSynthesisPrompt(synthesisPrompt: string, docCount: number, events: unknown[], isDD: boolean = false): string {
+  if (isDD) {
+    return `${synthesisPrompt}
+
+Here are all items extracted from ${docCount} documents in this due diligence package:
+
+${JSON.stringify(events, null, 2)}
+
+Return ONLY a valid JSON array with the same structure but deduplicated, consolidated, and with SUMMARY items added. No explanation, no markdown.`;
+  }
   return `${synthesisPrompt}
 
 Here are all events extracted from ${docCount} documents in this legal matter:
@@ -303,8 +328,8 @@ function parseEventsJson(raw: string): ExtractedEvent[] {
     if (!Array.isArray(parsed)) {
       throw new Error('Response is not a JSON array');
     }
-    // Validate each event has at minimum title and description
-    return parsed.filter((evt: any) => evt && typeof evt.title === 'string' && typeof evt.description === 'string');
+    // Validate each event has at minimum title/category and description/detail
+    return parsed.filter((evt: any) => evt && (typeof evt.title === 'string' || typeof evt.category === 'string') && (typeof evt.description === 'string' || typeof evt.detail === 'string'));
   } catch (err: any) {
     // Try to find a JSON array within the text
     const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
@@ -312,7 +337,7 @@ function parseEventsJson(raw: string): ExtractedEvent[] {
       try {
         const parsed = JSON.parse(arrayMatch[0]);
         if (Array.isArray(parsed)) {
-          return parsed.filter((evt: any) => evt && typeof evt.title === 'string' && typeof evt.description === 'string');
+          return parsed.filter((evt: any) => evt && (typeof evt.title === 'string' || typeof evt.category === 'string') && (typeof evt.description === 'string' || typeof evt.detail === 'string'));
         }
       } catch {
         // fall through

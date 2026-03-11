@@ -18,9 +18,10 @@ if (Astro.request.method === 'POST' && env?.DB) {
     const formData = await Astro.request.formData();
     const id = generateId();
     const now = new Date().toISOString();
+    const caseType = (formData.get('case_type') as string) || 'legal_matter';
     await env.DB.prepare(`
-      INSERT INTO cases (id, client_name, client_email, firm_name, matter_name, matter_description, gdrive_url, r2_prefix, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?)
+      INSERT INTO cases (id, client_name, client_email, firm_name, matter_name, matter_description, gdrive_url, r2_prefix, status, case_type, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?)
     `).bind(
       id,
       formData.get('client_name') as string,
@@ -30,6 +31,7 @@ if (Astro.request.method === 'POST' && env?.DB) {
       (formData.get('matter_description') as string) || null,
       (formData.get('gdrive_url') as string) || null,
       `${id}/`,
+      caseType,
       now, now
     ).run();
     return Astro.redirect('/admin?created=' + id);
@@ -165,6 +167,7 @@ const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'num
                       <th class="px-6 py-3">Case ID</th>
                       <th class="px-6 py-3">Client / Firm</th>
                       <th class="px-6 py-3">Matter</th>
+                      <th class="px-6 py-3">Type</th>
                       <th class="px-6 py-3">Status</th>
                       <th class="px-6 py-3 text-center">Docs</th>
                       <th class="px-6 py-3 text-center">Events</th>
@@ -177,13 +180,20 @@ const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'num
                     {cases.map((c) => (
                       <tr class="hover:bg-white/3 group" data-case-id={c.id}>
                         <td class="px-6 py-4">
-                          <a href={`/case/${c.id}`} class="font-mono text-brand-400 hover:text-brand-300 text-xs">{c.id}</a>
+                          <a href={(c as any).case_type === 'ma_due_diligence' ? `/report/${c.id}` : `/case/${c.id}`} class="font-mono text-brand-400 hover:text-brand-300 text-xs">{c.id}</a>
                         </td>
                         <td class="px-6 py-4">
                           <div class="text-white">{c.client_name}</div>
                           {c.firm_name && <div class="text-slate-500 text-xs">{c.firm_name}</div>}
                         </td>
                         <td class="px-6 py-4 text-slate-300 max-w-[200px] truncate">{c.matter_name}</td>
+                        <td class="px-6 py-4">
+                          {(c as any).case_type === 'ma_due_diligence' ? (
+                            <span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-900/60 text-green-300">Due Diligence</span>
+                          ) : (
+                            <span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-900/60 text-blue-300">Timeline</span>
+                          )}
+                        </td>
                         <td class="px-6 py-4">
                           <span class={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${statusColors[c.status] || statusColors.intake}`}>
                             {c.status}
@@ -207,14 +217,14 @@ const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'num
                         <td class="px-6 py-4">
                           <div class="flex items-center gap-2">
                             <button data-upload={c.id} class="text-xs text-brand-400 hover:text-brand-300 whitespace-nowrap" title="Upload documents">Upload</button>
-                            <a href={`/case/${c.id}`} class="text-xs text-brand-400 hover:text-brand-300 whitespace-nowrap">View</a>
+                            <a href={(c as any).case_type === 'ma_due_diligence' ? `/report/${c.id}` : `/case/${c.id}`} class="text-xs text-brand-400 hover:text-brand-300 whitespace-nowrap">View</a>
                             <button data-process={c.id} class="text-xs text-yellow-400 hover:text-yellow-300 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed" disabled={c.doc_count === 0 || c.status === 'processing'}>Process</button>
                             <button data-delete={c.id} class="text-xs text-red-400 hover:text-red-300 whitespace-nowrap">Delete</button>
                           </div>
                         </td>
                       </tr>
                       <tr class="hidden" data-detail={c.id}>
-                        <td colspan="9" class="px-6 py-4 bg-slate-900/30">
+                        <td colspan="10" class="px-6 py-4 bg-slate-900/30">
                           <div class="space-y-4">
                             <div class="grid grid-cols-2 gap-4 text-xs">
                               {c.client_email && <div><span class="text-slate-500">Email:</span> <span class="text-slate-300">{c.client_email}</span></div>}
@@ -300,6 +310,25 @@ const now = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'num
                 <input type="url" name="gdrive_url" id="gdrive_url"
                   class="w-full bg-slate-800 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-600 focus:border-transparent placeholder-slate-500"
                   placeholder="https://drive.google.com/drive/folders/..." />
+              </div>
+              <div>
+                <label class="block text-sm text-slate-400 mb-2">Case Type</label>
+                <div class="space-y-2">
+                  <label class="flex items-center gap-3 cursor-pointer bg-slate-800 border border-white/10 rounded-xl px-4 py-3 hover:border-white/20 transition-colors has-[:checked]:border-brand-600/50 has-[:checked]:bg-brand-950/30">
+                    <input type="radio" name="case_type" value="legal_matter" checked class="text-brand-600 focus:ring-brand-600 bg-slate-700 border-slate-600" />
+                    <div>
+                      <div class="text-sm text-white font-medium">Legal Matter Timeline</div>
+                      <div class="text-xs text-slate-500">Chronological event extraction from legal documents</div>
+                    </div>
+                  </label>
+                  <label class="flex items-center gap-3 cursor-pointer bg-slate-800 border border-white/10 rounded-xl px-4 py-3 hover:border-white/20 transition-colors has-[:checked]:border-green-600/50 has-[:checked]:bg-green-950/20">
+                    <input type="radio" name="case_type" value="ma_due_diligence" class="text-green-600 focus:ring-green-600 bg-slate-700 border-slate-600" />
+                    <div>
+                      <div class="text-sm text-white font-medium">M&A Due Diligence Report</div>
+                      <div class="text-xs text-slate-500">Deal intelligence analysis for acquisitions</div>
+                    </div>
+                  </label>
+                </div>
               </div>
               <button type="submit"
                 class="w-full bg-brand-600 hover:bg-brand-500 text-white font-medium py-2.5 px-4 rounded-xl transition-colors text-sm">

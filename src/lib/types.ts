@@ -6,6 +6,7 @@ export interface Case {
   matter_name: string;
   matter_description: string | null;
   status: 'intake' | 'processing' | 'complete' | 'error';
+  case_type: 'legal_matter' | 'ma_due_diligence';
   gdrive_url: string | null;
   r2_prefix: string | null;
   doc_count: number;

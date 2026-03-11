@@ -19,9 +19,10 @@ export const POST: APIRoute = async ({ request, locals }) => {
   const id = generateId();
   const now = new Date().toISOString();
 
+  const caseType = body.case_type || 'legal_matter';
   await env.DB.prepare(`
-    INSERT INTO cases (id, client_name, client_email, firm_name, matter_name, matter_description, gdrive_url, r2_prefix, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?)
+    INSERT INTO cases (id, client_name, client_email, firm_name, matter_name, matter_description, gdrive_url, r2_prefix, status, case_type, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'intake', ?, ?, ?)
   `).bind(
     id,
     body.client_name,
@@ -31,6 +32,7 @@ export const POST: APIRoute = async ({ request, locals }) => {
     body.matter_description || null,
     body.gdrive_url || null,
     `${id}/`,
+    caseType,
     now, now
   ).run();
 
